@@ -1,0 +1,14 @@
+{
+  "method": "greedy percolation",
+  "percolate_params": {
+    "margin": 0,
+    "norm": "none",
+    "r": 1,
+    "r_final": 1
+  },
+  "submission_seeds": {
+    "kind": "random",
+    "pct": 5
+  },
+  "note": "Chosen on Train (mean unseeded F1 at 1%/5% seeds, random+degree); confirmed on Val; frozen before Test."
+}

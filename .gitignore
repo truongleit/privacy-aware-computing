@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+
+# Environments
+.venv/
+venv/
+.conda/
+.env
+
+# Caches / intermediates (embeddings, features, joblib)
+*.npy
+*.npz
+*.pkl
+*.joblib
+cache/
+.cache/
+tmp/
+
+# Generated outputs (regenerate from code + frozen settings)
+outputs/
+runs/
+logs/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Data (datasets, generated predictions/results)
+**/student/
+**/predictions/
+**/results/
+*.csv
+*.json
+!**/config.json
+!**/environment.yml
