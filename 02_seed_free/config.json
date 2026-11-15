@@ -1,43 +1,9 @@
 {
-  "main_method": "bootstrap",
-  "methods": {
-    "fingerprint": {
-      "params": {
-        "weights": {
-          "deg": 1,
-          "nbr_deg": 1.0,
-          "nbr_tri": 1.0,
-          "tri": 1
-        }
-      },
-      "tau": 0
-    },
-    "bootstrap": {
-      "params": {
-        "k_fracs": [
-          0.01,
-          0.03,
-          0.1
-        ],
-        "r": 2,
-        "reseed_votes": 4
-      },
-      "tau": 3
-    },
-    "isorank": {
-      "params": {
-        "alpha": 0.8,
-        "prior_temp": 0.3
-      },
-      "tau": 0
-    },
-    "faq": {
-      "params": {
-        "init_lambda": 0.5,
-        "iters": 15
-      },
-      "tau": 0
-    }
+  "main_method": "faq",
+  "faq_params": {
+    "init_lambda": 0.5,
+    "iters": 15
   },
+  "tau": 0,
   "note": "Chosen on Train only (mean F1 at extra-noise 0/5/10% on B); confirmed once on Val; frozen before Test."
 }
