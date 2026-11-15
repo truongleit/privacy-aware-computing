@@ -1,10 +1,8 @@
 {
-  "method": "greedy percolation",
-  "percolate_params": {
-    "margin": 0,
-    "norm": "none",
-    "r": 1,
-    "r_final": 1
+  "method": "seeded graph matching (Frank-Wolfe)",
+  "sgm_params": {
+    "init": "bary",
+    "max_iter": 30
   },
   "submission_seeds": {
     "kind": "random",

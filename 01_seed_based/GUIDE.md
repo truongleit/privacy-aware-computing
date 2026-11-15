@@ -1,4 +1,4 @@
-# Guide: Seed-based Graph Matching with Greedy Percolation (Jupyter notebook)
+# Guide: Seed-based Graph Matching with Seeded Graph Matching (Jupyter notebook)
 
 Working mode: you write the code in a notebook; this guide gives the files, the functions to use, and the reasoning for each step. No full solution is included.
 
@@ -25,9 +25,10 @@ Files you create (suggested):
 
 | Path | Purpose |
 |---|---|
-| `01_seed_based/solution.ipynb` | The notebook with all steps below. |
-| `01_seed_based/config.json` | The frozen hyperparameters (r, margin, normalisation choice, ...). Written once, before test. |
-| `01_seed_based/results/val_results.csv` | Per-instance metrics table. |
+| `01_seed_based/solution.ipynb` | The single notebook with all steps below: main method first, comparison methods at the end. |
+| `01_seed_based/config.json` | The frozen SGM hyperparameters (initialisation, max iterations). Written once, before test. |
+| `01_seed_based/results/{train,val}_results.csv` | Per-instance metrics of the main method. |
+| `01_seed_based/results/comparison_results.csv` | Per-instance metrics of every method (column `method`). |
 | `01_seed_based/predictions/<instance>/predictions.csv` | Test output, columns `node_a,node_b`. Check the instructor's required submission layout before final export. |
 | `01_seed_based/report.md` | Validation results and limitations. |
 
@@ -35,108 +36,94 @@ Files you create (suggested):
 
 ## 2. The idea in one paragraph
 
-B is A with some edges deleted and replaced by random ones, and the node labels are shuffled. If u in A maps to v in B, then most neighbours of u map to neighbours of v. Given a known seed pair (a, b), every neighbour pair (x in N(a), y in N(b)) gets one "vote" that x matches y. A pair that collects at least r votes is a very likely match, because random pairs rarely share r matched neighbours. Matching that pair creates new votes for its neighbours, and the process spreads (percolates). Greedy version: always match the highest-scoring pair next.
+B is A with some edges deleted and replaced by random ones, and the node labels are shuffled. The true mapping is the one under which A's and B's edges agree the most: if u maps to v and x maps to y, then (u, x) is an edge in A about as often as (v, y) is an edge in B. Seeded graph matching (SGM) searches directly for the permutation `P` that maximises the number of agreeing edges, `f(P) = trace(A P B P^T)`, with the seed pairs fixed. Searching over permutations is hard, so the unknown part is relaxed to a doubly-stochastic matrix and optimised with Frank-Wolfe, then rounded back to a permutation. Unlike neighbour-vote methods (percolation), every edge contributes from the first iteration, so very few seeds are enough.
 
 ---
 
 ## 3. Step-by-step
 
 ### Step 0: Setup
-- Imports: `numpy`, `pandas`, `scipy.sparse`, `time`, `json`, `pathlib`, `matplotlib`.
+- Imports: `numpy`, `pandas`, `scipy.sparse`, `scipy.optimize.linear_sum_assignment`, `joblib`, `time`, `json`, `pathlib`, `matplotlib`.
 - Set a `DATA = Path("student/seed_based")` constant.
 - Why: all later steps use the same path and the same libraries, so keep them in one cell.
 
 ### Step 1: `load_instance`
 Signature idea: `load_instance(split, name, seed_kind="random", seed_pct=5)`. Returns `A, B, seeds, truth, meta`.
 - Read `nodes_a.csv` for `n`.
-- Read edges with `pd.read_csv`. Build `scipy.sparse.coo_matrix((np.ones(m), (src, dst)), shape=(n, n))`, then `A = A + A.T`, convert to `csr_matrix`, and set `A.data[:] = 1` (this removes duplicates if an edge appears in both directions).
-- Seeds: `pd.read_csv(f"seeds_{kind}_{pct:02d}.csv")`.
-- Truth: `ground_truth.csv` if it exists, else `None`.
-- `json.load` for metadata.
-- Why: percolation is matrix arithmetic. A symmetric 0/1 sparse matrix is the cleanest form.
-- Check: `A.shape == (n, n)`, `(A != A.T).nnz == 0`, `A.diagonal().sum() == 0`, `A.nnz // 2` close to the number of edge rows.
+- Read edges with `pd.read_csv`. Build `scipy.sparse.coo_matrix((np.ones(m), (src, dst)), shape=(n, n))`, then `A = A + A.T`, convert to `csr_matrix`, drop the diagonal and set `A.data[:] = 1` (removes duplicates).
+- Seeds: `pd.read_csv(f"seeds_{kind}_{pct:02d}.csv")`. Truth: `ground_truth.csv` if it exists, else `None`. `json.load` for metadata.
+- Why: SGM is matrix arithmetic. A symmetric 0/1 sparse matrix is the cleanest form.
 
 ### Step 2: Metrics (write before the matcher)
 `evaluate(pred, truth, seeds, n)` where `pred` is a dict `{a: b}`.
-- correct = pairs where `truth[a] == b`.
-- precision = correct / len(pred); recall = correct / n; F1 = harmonic mean; coverage = len(pred) / n.
-- Unseeded versions: drop the seed nodes from `pred` and `truth`, then recompute recall (and precision). This is the number that matters, because seeds are free.
-- Aggregate: compute one row per instance, build a DataFrame with `family`, `difficulty`, `n`, then `df.groupby(["family", "difficulty"]).mean(numeric_only=True)`. Never pool all nodes.
-- Check: `evaluate(truth_dict, truth, seeds, n)` gives 1.0 everywhere. `evaluate(seeds_dict, ...)` gives unseeded recall 0.
-- Why first: every later design choice is judged by these numbers.
+- precision = correct / len(pred); recall = correct / n; F1; coverage = len(pred) / n.
+- Unseeded versions: drop seed nodes from `pred` and `truth`, recompute. This is the number that matters, because seeds are free.
+- Aggregate one row per instance, then average over instances (`groupby`). Never pool all nodes.
 
-### Step 3: Baselines (give you a reference)
-- **Seeds only**: unseeded recall 0 (the README says this is insufficient).
-- **Degree-rank match**: sort nodes in A and B by degree and pair them by rank. Expect low accuracy; it is your floor.
-- Why: shows the percolation gain is real.
+### Step 3: The SGM objective and gradient
+- Split nodes into seeded (`sa`, `sb`) and unseeded (`ua`, `ub`). Let `S0` be the n x n seed indicator and `X` the m x m unseeded block (m = n - #seeds); the full `P~` is `S0` with `X` written into rows `ua`, columns `ub`.
+- Gradient: `G = A @ P~ @ B` (A, B symmetric). Compute it as two sparse-times-dense products: `A @ (B @ P~.T).T`. Only the block `G[ua][:, ub]` matters.
+- Why: `f` is quadratic in `P`; its gradient is the "vote matrix" under the current soft mapping, so it generalises the neighbour votes of percolation to all nodes at once.
 
-### Step 4: The score matrix
-- Build the seed indicator matrix `P` (n x n sparse): `P[a, b] = 1` for each matched pair.
-- `M = A @ P @ B.T`, so `M[u, v]` = number of matched pairs (x, y) with x a neighbour of u in A and y a neighbour of v in B. Convert to dense with `.toarray()` (n <= 1000, so at most 8 MB at float64).
-- Keep `used_a`, `used_b` boolean arrays, initially True for seed nodes.
-- Why: this is the vote count from section 2. One sparse product replaces nested loops.
-- Check: for one seed pair, `M[x, y] >= 1` for neighbours x of a and y of b.
-
-### Step 5: The greedy percolation loop
+### Step 4: Frank-Wolfe loop
 ```
-while True:
-    candidates = M with rows/cols of used nodes masked to -inf
-    (u, v) = argmax of candidates
-    if candidates[u, v] < r: break
-    match u -> v; mark used
-    M[np.ix_(neighbors_A(u), neighbors_B(v))] += 1
+X = uniform m x m (barycentre)                      # or the LAP of the seed-only gradient, or a 50/50 mix
+for it in range(max_iter):
+    Gb = gradient(embed(X))[ua][:, ub]
+    Q  = permutation from linear_sum_assignment(-Gb)  # best vertex of the polytope
+    D  = Q - X
+    gap = sum(Gb * D);  stop if gap <= tol
+    c = 2 * gap;  d = sum(gradient(embed0(D))[ua][:, ub] * D)   # f along the segment: f(X) + c a + d a^2
+    alpha = clip(-c / (2 d), 0, 1) if d < 0 else (1 if c + d > 0 else 0)
+    X = X + alpha * D
+final mapping = linear_sum_assignment(-X)
 ```
-- Neighbours: `A.indices[A.indptr[u]:A.indptr[u+1]]` for CSR.
-- Cost: n argmax calls over n x n is ~n^3 = 10^9 for n=1000; fine with numpy if you avoid rebuilding the mask each time. Hint: instead of masking a copy, set `M[u, :] = -inf` and `M[:, v] = -inf` when you match (keep a separate counts matrix if you need both).
-- r (threshold) is the main hyperparameter. Start with r = 2.
-- Why r >= 2: with r = 1 a single noisy edge creates a wrong match, and wrong matches spread more wrong votes.
-- Output: `pred` dict including seeds. Evaluate with Step 2.
+- Why exact line search: the objective is a quadratic along the segment, so the best step has a closed form and no learning rate is needed.
+- Check: the objective `sum(G * P~)` must not decrease between iterations.
+- Confidence of a match (u, v): `G[u, v]` under the final mapping = number of neighbour pairs that agree.
 
-### Step 6: Make it robust to noise (the tuning part)
-Try these one at a time and log each with Step 2 metrics on train:
-1. **Threshold r** in {2, 3, 4}. Plot precision vs coverage. Low r: more coverage, more errors.
-2. **Margin rule**: accept (u, v) only if its score exceeds the second-best score in its row and in its column by at least `delta`. This is your rejection mechanism: skip uncertain nodes rather than guess.
-3. **Degree normalisation**: replace the score with `M[u,v] / sqrt(degA[u] * degB[v])` or a similar form. High-degree nodes collect many random votes, which matters for preferential attachment (hubs).
-4. **Tie-breaking**: when scores tie, prefer the pair with the closest degrees (`-abs(degA[u] - degB[v])`).
-5. **Processing order**: instead of one pair at a time, accept all pairs that are mutually best (row max and column max) in a round, then update. Faster, usually similar accuracy.
+### Step 5: Tuning on Train, confirm on Val, freeze
+- Grid: initialisation in {bary, vote, mix} x `max_iter` in {10, 30}. Score by mean unseeded F1 over Train instances at 1% and 5% seeds (random and degree), so the choice must work in the low-seed regime.
+- Confirm once on Val, then write the chosen parameters to `config.json` and do not change them afterwards.
+- Why tune the start: the problem is non-convex, so the start point can decide which local optimum Frank-Wolfe reaches.
 
-### Step 7 (optional): Finish the leftovers
-When percolation stalls with unmatched nodes:
-- Build a feature per node = its adjacency vector over the matched nodes (columns re-ordered by the mapping). Compute similarity `S` between A-rows and B-rows (cosine via `sklearn.metrics.pairwise.cosine_similarity` or your own dot product).
-- Solve `scipy.optimize.linear_sum_assignment(-S)` on the unmatched nodes.
-- Keep only pairs whose similarity exceeds a cutoff.
-- Why: percolation cannot cross small gaps, but this global assignment can.
+### Step 6: Experiments with the frozen config
+- Loop: split in {train, val}, instance, seed kind in {random, degree}, pct in {1, 5, 10}; run in parallel with `joblib`.
+- Record precision, recall, F1, coverage, unseeded recall, iterations, runtime, family, difficulty, n.
+- Tables: 5% headline, by family and difficulty, by seed level. Figures: recall vs seed level, iterations, runtime vs n.
+- Optimum check on Val: compare `f` of SGM's mapping with `f` of the true mapping. Lower means a local optimum; equal or higher means the objective itself is the limit.
+- Confidence: precision and coverage when keeping only matches with agreement score >= tau.
 
-### Step 8: Experiments
-- Loop: split in {train, val}, instance, seed kind in {random, degree}, pct in {1, 5, 10}.
-- For each, record: precision, recall, F1, coverage, unseeded recall, `time.perf_counter()` runtime, family, difficulty, n.
-- Headline table: 5% random vs 5% degree, by family and difficulty.
-- Figures: (a) unseeded recall vs seed percentage, per family; (b) precision vs coverage as r/margin vary; (c) confidence (score or margin) vs correctness for matches; (d) runtime vs n.
-- Tune on train, confirm on val. Do not re-tune on val results beyond confirming; if val is much worse, note that as overfitting in the report.
-
-### Step 9: Freeze and predict on test
-- Write the chosen parameters to `config.json` and do not change them afterwards.
-- For each test instance, load graphs and the 5% seed file (use the seed level the instructor specifies; check the test folders), run the frozen method, write `predictions.csv` with header `node_a,node_b`.
-- Validation script: no duplicates in either column, all ids in `[0, n)`, seeds present, no pair outside the node sets.
+### Step 7: Freeze and predict on test
+- Read `config.json`, run SGM on each test instance with the 5% seed file, write `predictions.csv` with header `node_a,node_b`.
+- Validation: no duplicates in either column, all ids in `[0, n)`, seeds present.
 - Never try to infer hidden test mappings.
 
-### Step 10: Report (`report.md`)
-Method description, frozen settings, validation tables (by family, difficulty, seed type and %), the figures above, runtime, and limitations.
+### Step 8: Comparison with other methods (end of the notebook)
+Run each alternative on the same Train+Val grid, with configurations fixed in advance, and save all per-instance rows to `results/comparison_results.csv`:
+- **Greedy percolation**: `M = A @ P_seeds @ B.T` counts matched-neighbour votes; repeatedly match the unmatched pair with the most votes (>= r), then add one vote to every pair in `N_A(u) x N_B(v)`; a final assignment on leftovers.
+- **Iterative global**: in rounds, one global assignment on the vote matrix, lock in only the most confident pairs, add them as anchors, repeat.
+- **One-shot seed-sim**: describe each node by which seeds it touches; one assignment on that similarity.
+- **Baselines**: degree-rank matching and seeds only.
+- Show recall by seed level, per-run SGM vs percolation at 1% seeds, runtime vs n.
+
+### Step 9: Report (`report.md`)
+Method, frozen settings, validation tables, the comparison, figures, runtime, and limitations.
 
 ---
 
 ## 4. What to expect (for analysis)
-- Percolation has a seed threshold. At 1% seeds (3 to 10 pairs) the process may not take off and recall stays low; at 5 to 10% it should cascade.
-- Degree seeds usually ignite the process more easily than random seeds, since hubs have many neighbours to vote for.
-- Hard instances have ~26% edge replacement, so true pairs share fewer neighbours; you need a lower r or a better normalisation, at a cost in precision.
-- SBM: wrong matches tend to stay inside the correct community. Erdos-Renyi has no structure beyond degrees, so it depends most on seeds.
-- Mistakes compound: a wrong early match gives wrong votes. High precision early matters more than coverage.
+- SGM uses every edge from the start, so it should work even at 1% seeds (3 to 10 pairs), where neighbour-vote methods may never ignite.
+- Fewer seeds mostly cost Frank-Wolfe iterations (more from a uniform start), not accuracy, on these graphs.
+- Percolation-style methods are hurt most by random seeds on preferential-attachment graphs (few hubs among the seeds); degree seeds help them.
+- One-shot methods that only use adjacency to the given seeds cannot separate nodes that touch no seed; expect them far behind.
+- Cost: dense n x n matrices and one O(n^3) assignment per iteration; fine for n <= 1000.
 
 ---
 
 ## 5. Suggested order of work
-1. Steps 0 to 2, verify with the sanity checks.
-2. Step 3 baselines.
-3. Steps 4 and 5 on one easy instance, then on all train instances.
-4. Step 6 tuning, one change at a time.
-5. Step 8 full experiments, then Step 9 and 10.
+1. Steps 0 to 2.
+2. Steps 3 and 4 on one easy instance (check the objective increases), then on all train instances.
+3. Step 5 tuning and freeze.
+4. Step 6 experiments, Step 7 test predictions.
+5. Step 8 comparison, then Step 9 report.
