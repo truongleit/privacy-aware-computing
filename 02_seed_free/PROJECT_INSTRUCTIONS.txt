@@ -1,0 +1,15 @@
+Project 02: Seed-free Graph Matching
+
+Goal: recover the one-to-one correspondence between anonymized graph A and auxiliary graph B.
+Data: 27 train, 9 validation, and 18 test graph pairs; independent graph instances across splits. Random, community, and preferential-attachment structures, with 300/600/1000 nodes. Current teaching version: v4. Train/validation have ground_truth.csv; Test truth is hidden.
+Files: student/seed_free/SPLIT/INSTANCE contains nodes_a.csv, nodes_b.csv, edges_a.csv, edges_b.csv, metadata.json, and supplied training/validation truth. Use graph structure only. No seed correspondences are supplied. Do not obtain or use another project's seed files.
+
+Required work: implement structural features and matching; tune only on Train/Val; freeze the method before Test; analyze graph family, difficulty, matching confidence and runtime.
+Suggested open directions: neighborhood fingerprints, iterative matching, graph embeddings, assignment objectives, rejection thresholds and robustness.
+Metrics: precision, recall, F1, coverage; aggregate across graph instances rather than pooling all nodes. Seed-based work also reports unseeded recall. Submitting only known seeds is insufficient.
+Submission: predictions.csv for each Test instance, columns node_a,node_b. No duplicate or invalid nodes; uncertain nodes may be omitted. Include source code, frozen settings and a report with validation results and limitations.
+
+Environment (run from this project folder):
+conda env create -f environment.yml
+conda activate privacy_projects
+Implement your own matching algorithm and validation metrics. Test predictions are scored by the instructor using hidden ground truth. Never search for hidden mappings or teacher generators.
